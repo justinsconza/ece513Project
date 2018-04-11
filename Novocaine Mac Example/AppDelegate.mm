@@ -167,6 +167,7 @@
             // comment at bottom of page explains the "inputPadded + L" in call to cblas_scopy
             // ---------------------------------------------------------------------------- //
             
+            // checking to make sure this is a separate branch...
             
             cblas_scopy(N, input, 1, inputPadded + L, 1);                           // pad input for convolution
             vDSP_conv(inputPadded, 1, hEnd, -1, convolutionOutput, 1, N+L-1, L);    // convolution
