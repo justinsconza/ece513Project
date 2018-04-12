@@ -51,14 +51,14 @@
     
     __weak AppDelegate * wself = self;
     
-    __block int dumpMatch = 10;
+    __block int dumpMatch = 100;
     __block int dumpCount = 1;
 
     // players
     __block int N = 512;                // block size
-    __block int L = FILTER_LENGTH;      // filter length
-    __block int D = 20;                 // delay amount
-    __block float delta = 0.001;        // gradient step size
+    __block int L = 32;                 // filter length
+    __block int D = 100;                 // delay amount
+    __block float delta = 0.000001;        // gradient step size
     __block float zeros = 0.0;          // for filling arrays
     
     // from 1024 containing both channels at once to two arrays of 512 for L and R separate
@@ -89,6 +89,8 @@
         
     }];
     
+    // ---- i/o related arrays ----- //
+    
     float* bufferInL;
     bufferInL = (float*)malloc((N+D)*sizeof(float));
     vDSP_vfill(&zeros, bufferInL, 1, N+D);
@@ -115,11 +117,10 @@
     
     
     
+    // ---- filter related arrays ----- //
     
-    
-    __block int F = N+L-1;    // output filtered length
+    __block int F = N+L-1;                          // output filtered length
     __block int P = (L+3 & -4u) + N+L-1;//N+L-1;    // length of padded signal passed to vDSP_conv comes to 1023
-    
     
     float* inputPadded;
     inputPadded = (float*)malloc(P*sizeof(float));
@@ -132,66 +133,101 @@
     float* convolutionOutputTimesTwo;
     convolutionOutputTimesTwo = (float*)malloc(2*F*sizeof(float));
     vDSP_vfill(&zeros, convolutionOutputTimesTwo, 1, 2*F);
-    __block int fillFlag = 0;
     
     float* overlap;
     overlap = (float*)malloc(N*sizeof(float));
     vDSP_vfill(&zeros, overlap, 1, N);
     
-    float* h;
-    h = (float*)malloc(L*sizeof(float));
-//    vDSP_vfill(&zeros, h, 1, L);
-    cblas_scopy(L, filterCoeffs, 1, h, 1);
+    float* hNew;
+    hNew = (float*)malloc(L*sizeof(float));
+    vDSP_vfill(&zeros, hNew, 1, L);
     
-    float* hEnd = h + L-1;
-        
+    float* hOld;
+    hOld = (float*)malloc(L*sizeof(float));
+    vDSP_vfill(&zeros, hOld, 1, L);
+    
+    
+    // ---- wiener related arrays ----- //
+    
+    __block float scale = N-L;          // for scaling filter average at end
+    
+    float* error;
+    error = (float*)malloc(N*sizeof(float));
+    vDSP_vfill(&zeros, error, 1, N);
+    
+    float* gradient;
+    gradient = (float*)malloc(L*sizeof(float));
+    vDSP_vfill(&zeros, gradient, 1, L);
+    
+    float* delayedBlock;
+    delayedBlock = (float*)malloc(L*sizeof(float));
+    vDSP_vfill(&zeros, delayedBlock, 1, L);
+    
+    
+    // ----- recording output -------- //
+    __block int nRecord = 0;
+    __block int recordStart = 15*N;
+    __block int recordStop = recordStart+30*N;
+    float* recording;
+    recording = (float*)malloc((recordStop-recordStart) * sizeof(float));
+    
     [self.audioManager setOutputBlock:^(float *outData, UInt32 numFrames, UInt32 numChannels) {
         // wself.ringBuffer->FetchInterleavedData(outData, numFrames, numChannels);
         
         while(wself.ringBufferIn->NumUnreadFrames() >= N + D){
             
-            //wself.ringBufferIn->FetchData(bufferInL, numFrames + D, 0, 1);
-            //wself.ringBufferIn->SeekReadHeadPosition(-D);
-            wself.ringBufferIn->FetchData(bufferInL, numFrames, 0, 1);
+            wself.ringBufferIn->FetchData(bufferInL, numFrames + D, 0, 1);
+            wself.ringBufferIn->SeekReadHeadPosition(-D);
             
-//            for(int i=0; i<numFrames; i++){
-//                input[i] = bufferInL[i];
-//                // input[i] = bufferInL[i+D];          // "future" samples
-//                // inputDelayed[i] = bufferInL[i];     // current
-//            }
             
-            cblas_scopy(N, bufferInL, 1, input, 1);
             
-            // ---------------------------------------------------------------------------- //
-            // https://stackoverflow.com/questions/35233153/incorrect-results-with-vdsp-conv
-            // comment at bottom of page explains the "inputPadded + L" in call to cblas_scopy
-            // ---------------------------------------------------------------------------- //
+            cblas_scopy(N, bufferInL+D, 1, input, 1);         // current
+            cblas_scopy(N, bufferInL, 1, inputDelayed, 1);    // "past"
             
-            // checking to make sure this is a separate branch...
+            // -------- do the actual filtering ------------------------------------------- //
             
-            cblas_scopy(N, input, 1, inputPadded + L, 1);                           // pad input for convolution
-            vDSP_conv(inputPadded, 1, hEnd, -1, convolutionOutput, 1, N+L-1, L);    // convolution
-            vDSP_vadd(convolutionOutput, 1, overlap, 1, bufferOutL, 1, N);          // overlap add into output buffer
-            cblas_scopy(L-1, convolutionOutput + N, 1, overlap, 1);                 // store overlap for next time
-
-            cblas_scopy(N, bufferOutL, 1, reInterleaved, 2);                        // reinterleaved left channel
-            cblas_scopy(N, bufferOutL, 1, reInterleaved+1, 2);                      // reinterleaved right channel
+            cblas_scopy(N, inputDelayed, 1, inputPadded + L, 1);                        // pad input for convolution
+            vDSP_conv(inputPadded, 1, hNew+L-1, -1, convolutionOutput, 1, N+L-1, L);    // convolution
+            vDSP_vadd(convolutionOutput, 1, overlap, 1, bufferOutL, 1, N);              // overlap add into output buffer
+            cblas_scopy(L-1, convolutionOutput + N, 1, overlap, 1);                     // store overlap for next time
             
-            /*
-            if(fillFlag < 2){
-                for(int i=0; i<N+L-1; i++){
-                    convolutionOutputTimesTwo[fillFlag*(N+L-1) + i] = convolutionOutput[i];
-                }
-                fillFlag++;
+            
+//            if(dumpCount++ == dumpMatch)
+//                writeOutput(bufferOutL, N, 44100);
+            
+            // -------- do the wiener update stuff --------------------------------------- //
+            
+            vDSP_vsub(bufferOutL, 1, input, 1, error, 1, N);                    // error = input - filter output
+            vDSP_vfill(&zeros, gradient, 1, L);
+            
+            for(int i=0; i<N-L; i++){
+                cblas_scopy(L, inputDelayed + i, 1, delayedBlock, 1);           // delayedBlock = inputDelayed[i:i+L]
+                vDSP_vsmul(delayedBlock, 1, &error[i], delayedBlock, 1, L);     // error[i]*delayedBlock
+                vDSP_vadd(gradient, 1, delayedBlock, 1, gradient, 1, L);        // gradient += error[i]*delayedBlock
             }
 
-            if(fillFlag == 2)
-                writeOutput(convolutionOutputTimesTwo, 2*(N+L-1), 44100);
+            vDSP_vsmul(gradient, 1, &scale, gradient, 1, L);                    // gradient /= (len(delayedBlock)-L)
+            vDSP_vsmul(gradient, 1, &delta, gradient, 1, L);                    // gradient *= delta
+            vDSP_vadd(hOld, 1, gradient, 1, hNew, 1, L);
+            
+            // -------- prep for output -------------------------------------------------- //
+            
+            cblas_scopy(N, bufferOutL, 1, reInterleaved, 2);                            // reinterleaved left channel
+            cblas_scopy(N, bufferOutL, 1, reInterleaved+1, 2);                          // reinterleaved right channel
+            
+            /*
+            if(nRecord >= recordStart & nRecord < recordStop ) {
+                cblas_scopy(N, bufferOutL, 1, recording + (nRecord-recordStart), 1);
+                printf("%d\n",nRecord);
+            }
+            
+            if(nRecord == recordStop) {
+                writeOutput(recording, recordStop - recordStart, 44100);
+                printf("done recording\n");
+            }
+            nRecord+=N;
             */
             
-            
-            if(dumpCount++ == dumpMatch)
-                writeOutput(convolutionOutput, F, 44100);
             
             wself.ringBufferOut->AddNewInterleavedFloatData(reInterleaved, numFrames, numChannels);
             
