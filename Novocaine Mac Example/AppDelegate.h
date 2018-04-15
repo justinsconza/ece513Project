@@ -33,7 +33,8 @@
 
 @property (nonatomic, strong) Novocaine *audioManager;
 @property (nonatomic, strong) AudioFileReader *fileReader;
-@property (nonatomic, strong) AudioFileWriter *fileWriter;
+@property (nonatomic, strong) AudioFileWriter *outputFileWriter;
+@property (nonatomic, strong) AudioFileWriter *inputFileWriter;
 @property (nonatomic, assign) RingBuffer * ringBufferIn;
 @property (nonatomic, assign) RingBuffer * ringBufferOut;
 @property (nonatomic, assign) RingBuffer * ringBufferOverlap;

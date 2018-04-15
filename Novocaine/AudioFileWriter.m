@@ -86,7 +86,7 @@ static pthread_mutex_t outputAudioFileLock;
         self.numChannels = thisNumChannels;
         self.currentTime = 0.0;
         self.latency = .011609977; // 512 samples / ( 44100 samples / sec ) default
-        
+                
         
         // We're going to impose a format upon the input file
         // Single-channel float does the trick.
@@ -141,6 +141,7 @@ static pthread_mutex_t outputAudioFileLock;
     SInt64 frameOffset = 0;
     ExtAudioFileTell(self.outputFile, &frameOffset);
     self.currentTime = (float)frameOffset / self.samplingRate;
+    
     
 }
 

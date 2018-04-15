@@ -57,9 +57,10 @@
     // players
     __block int N = 512;                // block size
     __block int L = 32;                 // filter length
-    __block int D = 100;                 // delay amount
-    __block float delta = 0.000001;        // gradient step size
+    __block int D = 2;                  // delay amount
+    __block float delta = 0.01;         // gradient step size, very sensitive
     __block float zeros = 0.0;          // for filling arrays
+    __block float volume = 64.0;        // scaling the final output back up, very sensitive
     
     // from 1024 containing both channels at once to two arrays of 512 for L and R separate
     float* deInterleavedL;
@@ -77,17 +78,71 @@
         reInterleaved[i] = 0.0;
     }
     
+    // ------------ audio file writing ---------------------------------------- //
     
+    // ---- input writing ------------------ //
+    
+    NSArray *pathComponentsInput = [NSArray arrayWithObjects:
+                               [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) lastObject],
+                               @"TDAF_input.wav",
+                               nil];
+    NSURL *outputFileURL_input = [NSURL fileURLWithPathComponents:pathComponentsInput];
+    
+    self.inputFileWriter = [[AudioFileWriter alloc]
+                             initWithAudioFileURL:outputFileURL_input
+                             samplingRate:self.audioManager.samplingRate
+                             numChannels:self.audioManager.numInputChannels];
+    
+    __block int inputCounter = 0;
+    __block int stopInputFlag = 0;
+    
+    // ---- output writing ----------------- //
+    
+    NSArray *pathComponentsOutput = [NSArray arrayWithObjects:
+                               [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) lastObject],
+                               @"TDAF_output.wav",
+                               nil];
+    NSURL *outputFileURL_output = [NSURL fileURLWithPathComponents:pathComponentsOutput];
+    
+    self.outputFileWriter = [[AudioFileWriter alloc]
+                             initWithAudioFileURL:outputFileURL_output
+                             samplingRate:self.audioManager.samplingRate
+                             numChannels:self.audioManager.numInputChannels];
+
+    __block int outputCounter = 0;
+    __block int stopOutputFlag = 0;
+    
+    // ------------------------------------------------------------------------ //
+    // ------------- input callback ------------------------------------------- //
+    // ------------------------------------------------------------------------ //
+
     [self.audioManager setInputBlock:^(float *data, UInt32 numFrames, UInt32 numChannels) {
-        // wself.ringBuffer->AddNewInterleavedFloatData(data, numFrames, numChannels);
         
-        for(int i=0; i<numFrames; i++){
-            deInterleavedL[i] = data[2*i];
-        }
-        
+        // deinterleave and write to input ring buffer
+        cblas_scopy(N, data, 2, deInterleavedL, 1);
         wself.ringBufferIn->AddNewFloatData(deInterleavedL, numFrames, 0);
         
+        
+        // ---------- write input file ------------------------------------- //
+        
+        [wself.inputFileWriter writeNewAudio:data numFrames:numFrames numChannels:numChannels];
+        inputCounter += 1;
+        
+        // writing blocks of N samples at a time
+        if (inputCounter > 1000){
+            if (!stopInputFlag){
+                stopInputFlag = 1;
+                printf("stopped\n");
+            }
+            // wself.audioManager.inputBlock = nil;
+            [wself.inputFileWriter stop];
+        }
+        
     }];
+    
+    // ------------------------------------------------------------------------ //
+    // ------------- output callback ------------------------------------------ //
+    // ------------------------------------------------------------------------ //
     
     // ---- i/o related arrays ----- //
     
@@ -116,7 +171,6 @@
     vDSP_vfill(&zeros, inputDelayed, 1, N);
     
     
-    
     // ---- filter related arrays ----- //
     
     __block int F = N+L-1;                          // output filtered length
@@ -129,10 +183,6 @@
     float* convolutionOutput;
     convolutionOutput = (float*)malloc(F*sizeof(float));
     vDSP_vfill(&zeros, convolutionOutput, 1, F);
-    
-    float* convolutionOutputTimesTwo;
-    convolutionOutputTimesTwo = (float*)malloc(2*F*sizeof(float));
-    vDSP_vfill(&zeros, convolutionOutputTimesTwo, 1, 2*F);
     
     float* overlap;
     overlap = (float*)malloc(N*sizeof(float));
@@ -149,7 +199,7 @@
     
     // ---- wiener related arrays ----- //
     
-    __block float scale = N-L;          // for scaling filter average at end
+    __block float scale = 1.0/(N-L);          // for scaling filter average at end
     
     float* error;
     error = (float*)malloc(N*sizeof(float));
@@ -165,78 +215,112 @@
     
     
     // ----- recording output -------- //
+    
     __block int nRecord = 0;
     __block int recordStart = 15*N;
     __block int recordStop = recordStart+30*N;
     float* recording;
     recording = (float*)malloc((recordStop-recordStart) * sizeof(float));
     
+    
+    __block int popCounter = 5;
+    __block int doneCounting = 0;
+    
     [self.audioManager setOutputBlock:^(float *outData, UInt32 numFrames, UInt32 numChannels) {
-        // wself.ringBuffer->FetchInterleavedData(outData, numFrames, numChannels);
         
-        while(wself.ringBufferIn->NumUnreadFrames() >= N + D){
+        // need to avoid a pop sound at the beginning
+        if(!doneCounting) {
+            popCounter -= 1;
+            if(popCounter == 0)
+                doneCounting = 1;
+        }
+        
+        if(doneCounting) {
+        
+            while(wself.ringBufferIn->NumUnreadFrames() >= N + D){
+                
+                wself.ringBufferIn->FetchData(bufferInL, numFrames + D, 0, 1);
+                wself.ringBufferIn->SeekReadHeadPosition(-D);
+                
+                cblas_scopy(N, bufferInL+D, 1, input, 1);         // current
+                cblas_scopy(N, bufferInL, 1, inputDelayed, 1);    // "past"
+                
+                // -------- do the actual filtering ------------------------------------------- //
+                
+                cblas_scopy(N, inputDelayed, 1, inputPadded + L, 1);                        // pad input for convolution
+                vDSP_conv(inputPadded, 1, hNew+L-1, -1, convolutionOutput, 1, N+L-1, L);    // convolution
+                vDSP_vadd(convolutionOutput, 1, overlap, 1, bufferOutL, 1, N);              // overlap add into output buffer
+                cblas_scopy(L-1, convolutionOutput + N, 1, overlap, 1);                     // store overlap for next time
+                
+                
+                vDSP_vsmul(bufferOutL, 1, &volume, bufferOutL, 1, N);
+                
+                // -------- do the wiener update stuff --------------------------------------- //
+                
+                vDSP_vsub(bufferOutL, 1, input, 1, error, 1, N);                    // error = input - filter output
+                vDSP_vfill(&zeros, gradient, 1, L);                                 // reinitialize the gradient vector
+                
+                
+                for(int i=0; i<N-L; i++){                                           // make an average gradient vector
+                    cblas_scopy(L, inputDelayed + i, 1, delayedBlock, 1);           // delayedBlock = inputDelayed[i:i+L]
+                    vDSP_vsmul(delayedBlock, 1, &error[i], delayedBlock, 1, L);     // error[i]*delayedBlock
+                    vDSP_vadd(gradient, 1, delayedBlock, 1, gradient, 1, L);        // gradient += error[i]*delayedBlock
+                }
+                                                                                    // complete the average
+                vDSP_vsmul(gradient, 1, &scale, gradient, 1, L);                    // gradient /= (len(delayedBlock)-L)
+                
+    //            if(dumpCount++ == dumpMatch) {
+    //                writeOutput(bufferOutL, N, 44100);
+    //                printf("dumped\n");
+    //            }
+                
+                vDSP_vsmul(gradient, 1, &delta, gradient, 1, L);                    // gradient *= delta
+                vDSP_vadd(hOld, 1, gradient, 1, hNew, 1, L);
+                
+                // -------- prep for output -------------------------------------------------- //
+                
+                cblas_scopy(N, bufferOutL, 1, reInterleaved, 2);                            // reinterleaved left channel
+                cblas_scopy(N, bufferOutL, 1, reInterleaved+1, 2);                          // reinterleaved right channel
+                
+                /*
+                if(nRecord >= recordStart & nRecord < recordStop ) {
+                    cblas_scopy(N, bufferOutL, 1, recording + (nRecord-recordStart), 1);
+                    // printf("%d\n",nRecord);
+                }
+                
+                if(nRecord == recordStop) {
+                    writeOutput(recording, recordStop - recordStart, 44100);
+                    printf("done recording\n");
+                }
+                nRecord+=N;
+                */
+                
+                
+                wself.ringBufferOut->AddNewInterleavedFloatData(reInterleaved, numFrames, numChannels);
+                
+            } // end while loop
             
-            wself.ringBufferIn->FetchData(bufferInL, numFrames + D, 0, 1);
-            wself.ringBufferIn->SeekReadHeadPosition(-D);
-            
-            
-            
-            cblas_scopy(N, bufferInL+D, 1, input, 1);         // current
-            cblas_scopy(N, bufferInL, 1, inputDelayed, 1);    // "past"
-            
-            // -------- do the actual filtering ------------------------------------------- //
-            
-            cblas_scopy(N, inputDelayed, 1, inputPadded + L, 1);                        // pad input for convolution
-            vDSP_conv(inputPadded, 1, hNew+L-1, -1, convolutionOutput, 1, N+L-1, L);    // convolution
-            vDSP_vadd(convolutionOutput, 1, overlap, 1, bufferOutL, 1, N);              // overlap add into output buffer
-            cblas_scopy(L-1, convolutionOutput + N, 1, overlap, 1);                     // store overlap for next time
-            
-            
-//            if(dumpCount++ == dumpMatch)
-//                writeOutput(bufferOutL, N, 44100);
-            
-            // -------- do the wiener update stuff --------------------------------------- //
-            
-            vDSP_vsub(bufferOutL, 1, input, 1, error, 1, N);                    // error = input - filter output
-            vDSP_vfill(&zeros, gradient, 1, L);
-            
-            for(int i=0; i<N-L; i++){
-                cblas_scopy(L, inputDelayed + i, 1, delayedBlock, 1);           // delayedBlock = inputDelayed[i:i+L]
-                vDSP_vsmul(delayedBlock, 1, &error[i], delayedBlock, 1, L);     // error[i]*delayedBlock
-                vDSP_vadd(gradient, 1, delayedBlock, 1, gradient, 1, L);        // gradient += error[i]*delayedBlock
-            }
-
-            vDSP_vsmul(gradient, 1, &scale, gradient, 1, L);                    // gradient /= (len(delayedBlock)-L)
-            vDSP_vsmul(gradient, 1, &delta, gradient, 1, L);                    // gradient *= delta
-            vDSP_vadd(hOld, 1, gradient, 1, hNew, 1, L);
-            
-            // -------- prep for output -------------------------------------------------- //
-            
-            cblas_scopy(N, bufferOutL, 1, reInterleaved, 2);                            // reinterleaved left channel
-            cblas_scopy(N, bufferOutL, 1, reInterleaved+1, 2);                          // reinterleaved right channel
-            
-            /*
-            if(nRecord >= recordStart & nRecord < recordStop ) {
-                cblas_scopy(N, bufferOutL, 1, recording + (nRecord-recordStart), 1);
-                printf("%d\n",nRecord);
-            }
-            
-            if(nRecord == recordStop) {
-                writeOutput(recording, recordStop - recordStart, 44100);
-                printf("done recording\n");
-            }
-            nRecord+=N;
-            */
-            
-            
-            wself.ringBufferOut->AddNewInterleavedFloatData(reInterleaved, numFrames, numChannels);
-            
-        } // end while loop
+        } // end de-pop conditional
         
         wself.ringBufferOut->FetchInterleavedData(outData, numFrames, numChannels);
         
+ 
+        // ---------- write output file ------------------------------------ //
+                
+        [wself.outputFileWriter writeNewAudio:outData numFrames:numFrames numChannels:numChannels];
+        outputCounter += 1;
+        
+        // writing blocks of N samples at a time
+        if (outputCounter > 1000){
+            if (!stopOutputFlag){
+                stopOutputFlag = 1;
+                printf("stopped\n");
+            }
+            // wself.audioManager.inputBlock = nil;
+            [wself.outputFileWriter stop];
+        }
+        
     }];
-    
     
     // START IT UP YO
     [self.audioManager play];
