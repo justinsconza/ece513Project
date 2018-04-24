@@ -142,20 +142,6 @@
             }
         }
         
-        /*
-        [wself.inputFileWriter writeNewAudio:data numFrames:numFrames numChannels:numChannels];
-        inputCounter += 1;
-        
-        // writing blocks of N samples at a time
-        if (inputCounter > 1000){
-            if (!stopInputFlag){
-                stopInputFlag = 1;
-                printf("stopped\n");
-            }
-            // wself.audioManager.inputBlock = nil;
-            [wself.inputFileWriter stop];
-        }
-        */
     }];
     
     // ------------------------------------------------------------------------ //
@@ -232,6 +218,8 @@
     vDSP_vfill(&zeros, delayedBlock, 1, L);
     
     
+    __block int blockCounter = 0;
+    __block int blockStop = 200;
     
     __block int popCounter = 5;
     __block int doneCounting = 0;
@@ -279,11 +267,17 @@
                                                                                     // complete the average
                 vDSP_vsmul(gradient, 1, &scale, gradient, 1, L);                    // gradient /= (len(delayedBlock)-L)
                 
-    //            if(dumpCount++ == dumpMatch) {
-    //                writeOutput(bufferOutL, N, 44100);
-    //                printf("dumped\n");
-    //            }
-                
+                if (!stopOutputFlag) {
+                    if(blockCounter % blockStop == 0) {
+                        printf("%d\n",blockCounter);
+                        NSString* fileName = [NSString stringWithFormat:@"%@%d%@", @"block",blockCounter,@"_noNoise.py"];
+                        writeOutput(hNew, L, 44100, fileName);
+                        printf("dumped\n");
+                        
+                    }
+                    blockCounter++;
+                }
+            
                 vDSP_vsmul(gradient, 1, &delta, gradient, 1, L);                    // gradient *= delta
                 vDSP_vadd(hOld, 1, gradient, 1, hNew, 1, L);
                 
@@ -327,21 +321,6 @@
                 outputCounter += 1;
             }
         }
-        
-        /*
-        if (outputCounter > 1000){
-            if (!stopOutputFlag){
-                stopOutputFlag = 1;
-                printf("stopped\n");
-            }
-            // wself.audioManager.inputBlock = nil;
-            [wself.outputFileWriter stop];
-        }
-        else {
-            [wself.outputFileWriter writeNewAudio:outData numFrames:numFrames numChannels:numChannels];
-            outputCounter += 1;
-        }
-        */
         
     }];
     

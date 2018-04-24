@@ -9,9 +9,13 @@
 #ifndef writeOutput_h
 #define writeOutput_h
 
-void writeOutput(float* output, int length, int FS) {
-        
-    FILE* f = fopen("/Users/justinsconza/Documents/coreAudio/ece513_babySteps/python/output.py", "w+");
+void writeOutput(float* output, int length, int FS, NSString* name) {
+    
+    NSString* pathAndName = [NSString stringWithFormat:@"%@%@", @"/Users/justinsconza/Documents/coreAudio/ece513_babySteps/python/", name];
+    const char* fileToOpen = [pathAndName UTF8String];
+    FILE* f = fopen(fileToOpen, "w+");
+    
+    // FILE* f = fopen("/Users/justinsconza/Documents/coreAudio/ece513_babySteps/python/output.py", "w+");
     
     fputs("import numpy as np\n",f);
     fputs("import scipy as sp\n\n",f);
