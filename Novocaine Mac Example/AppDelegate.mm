@@ -219,9 +219,10 @@
     
     
     __block int blockCounter = 0;
-    __block int blockStop = 200;
+    __block int blockStop = 64;
+    __block int blockCountTotal = 6;
     
-    __block int popCounter = 5;
+    __block int popCounter = 10;
     __block int doneCounting = 0;
     
     [self.audioManager setOutputBlock:^(float *outData, UInt32 numFrames, UInt32 numChannels) {
@@ -267,17 +268,20 @@
                                                                                     // complete the average
                 vDSP_vsmul(gradient, 1, &scale, gradient, 1, L);                    // gradient /= (len(delayedBlock)-L)
                 
-                if (!stopOutputFlag) {
+                /*
+                if (blockCounter <= blockCountTotal*blockStop) {
                     if(blockCounter % blockStop == 0) {
                         printf("%d\n",blockCounter);
-                        NSString* fileName = [NSString stringWithFormat:@"%@%d%@", @"block",blockCounter,@"_noNoise.py"];
+                        NSString* fileName = [NSString stringWithFormat:@"%@%d%@", @"block",blockCounter,@"_constantTone.py"];
                         writeOutput(hNew, L, 44100, fileName);
                         printf("dumped\n");
-                        
+
                     }
                     blockCounter++;
                 }
-            
+                */
+                
+                
                 vDSP_vsmul(gradient, 1, &delta, gradient, 1, L);                    // gradient *= delta
                 vDSP_vadd(hOld, 1, gradient, 1, hNew, 1, L);
                 
